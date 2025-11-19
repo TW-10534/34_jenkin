@@ -32,7 +32,8 @@ pipeline {
             steps {
                 sh """
                 . ${VENV_DIR}/bin/activate
-                ${PYTHON} train.py --epochs 2 --output_dir ${OUTPUT_DIR}
+                ${PYTHON} train.py --output_dir ${OUTPUT_DIR}
+
                 """
             }
         }

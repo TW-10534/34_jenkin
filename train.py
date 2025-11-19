@@ -4,12 +4,24 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 
 from model import SimpleCIFARConvNet
 
-def get_dataloaders(batch_size: int = 64):
+
+def get_dataloaders(
+    batch_size: int = 64,
+    train_limit: int | None = 2000,
+    test_limit: int | None = 1000,
+    num_workers: int = 2,
+):
+    """
+    Create CIFAR-10 train/test dataloaders.
+
+    For CI/Jenkins we use only a subset (train_limit/test_limit)
+    to keep training fast.
+    """
     transform_train = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(32, padding=4),
@@ -28,6 +40,7 @@ def get_dataloaders(batch_size: int = 64):
         ),
     ])
 
+    # This will download the data the first time, then reuse from "data/"
     train_dataset = datasets.CIFAR10(
         root="data",
         train=True,
@@ -41,10 +54,29 @@ def get_dataloaders(batch_size: int = 64):
         transform=transform_test,
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+    # Save class names before wrapping in Subset (Subset removes .classes)
+    class_names = train_dataset.classes
 
-    return train_loader, test_loader, train_dataset.classes
+    # 🔥 Use only a small subset to keep CI fast
+    if train_limit is not None:
+        train_dataset = Subset(train_dataset, range(train_limit))
+    if test_limit is not None:
+        test_dataset = Subset(test_dataset, range(test_limit))
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+    )
+
+    return train_loader, test_loader, class_names
 
 
 def train_one_epoch(model, loader, criterion, optimizer, device):
@@ -97,10 +129,16 @@ def evaluate(model, loader, criterion, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=5)
+    # For CI/Jenkins: 1 epoch by default
+    parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--output_dir", type=str, default="artifacts")
+    parser.add_argument("--train_limit", type=int, default=2000,
+                        help="Number of training samples to use (None for full dataset)")
+    parser.add_argument("--test_limit", type=int, default=1000,
+                        help="Number of test samples to use (None for full dataset)")
+    parser.add_argument("--num_workers", type=int, default=2)
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -108,7 +146,12 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    train_loader, test_loader, class_names = get_dataloaders(batch_size=args.batch_size)
+    train_loader, test_loader, class_names = get_dataloaders(
+        batch_size=args.batch_size,
+        train_limit=args.train_limit,
+        test_limit=args.test_limit,
+        num_workers=args.num_workers,
+    )
 
     model = SimpleCIFARConvNet(num_classes=len(class_names)).to(device)
     criterion = nn.CrossEntropyLoss()
