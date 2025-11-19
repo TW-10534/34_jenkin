@@ -1,63 +1,85 @@
 # predict.py
+import os
+import json
 import argparse
 import torch
-from torchvision import transforms
-from PIL import Image
-import os
 
-from model import SimpleCIFARConvNet
+from model import TinyCharRNN
 
-def load_class_names(path: str):
-    with open(path, "r") as f:
-        classes = [line.strip() for line in f.readlines()]
-    return classes
 
-def get_transform():
-    # same normalization as test set
-    return transforms.Compose([
-        transforms.Resize((32, 32)),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.4914, 0.4822, 0.4465],
-            std=[0.2470, 0.2435, 0.2616],
-        ),
-    ])
+def generate(model, idx, max_new_tokens, block_size, temperature=1.0):
+    """
+    Autoregressive char-level generation.
+    idx: [1, T] tensor of token indices
+    """
+    model.eval()
+    device = next(model.parameters()).device
+
+    for _ in range(max_new_tokens):
+        idx_cond = idx[:, -block_size:]
+        logits, _ = model(idx_cond)
+        logits = logits[:, -1, :] / temperature
+        probs = torch.softmax(logits, dim=-1)
+        next_idx = torch.multinomial(probs, num_samples=1)  # [1, 1]
+        idx = torch.cat([idx, next_idx], dim=1)
+    return idx
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--image_path", type=str, required=True)
-    parser.add_argument("--model_path", type=str, default="artifacts/cifar_cnn.pt")
-    parser.add_argument("--classes_path", type=str, default="artifacts/class_names.txt")
+    parser.add_argument("--model_path", type=str, default="artifacts/tiny_char_rnn.pt")
+    parser.add_argument("--meta_path", type=str, default="artifacts/meta.json")
+    parser.add_argument("--prompt", type=str, default="Jenkins text demo:")
+    parser.add_argument("--max_new_tokens", type=int, default=300)
+    parser.add_argument("--temperature", type=float, default=1.0)
     args = parser.parse_args()
+
+    if not os.path.exists(args.model_path):
+        raise FileNotFoundError(f"Model file not found: {args.model_path}")
+    if not os.path.exists(args.meta_path):
+        raise FileNotFoundError(f"Meta file not found: {args.meta_path}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    if not os.path.exists(args.model_path):
-        raise FileNotFoundError(f"Model file not found: {args.model_path}")
-    if not os.path.exists(args.classes_path):
-        raise FileNotFoundError(f"Classes file not found: {args.classes_path}")
+    # Load vocab + config
+    with open(args.meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
 
-    class_names = load_class_names(args.classes_path)
+    chars = meta["chars"]
+    stoi = meta["stoi"]
+    itos = {int(k): v for k, v in meta["itos"].items()} if isinstance(next(iter(meta["itos"].keys())), str) else meta["itos"]
+    block_size = meta["block_size"]
+    vocab_size = len(chars)
 
-    model = SimpleCIFARConvNet(num_classes=len(class_names))
-    model.load_state_dict(torch.load(args.model_path, map_location=device))
-    model.to(device)
-    model.eval()
+    def encode(s: str):
+        return [stoi.get(ch, 0) for ch in s]  # unknown chars → 0
 
-    transform = get_transform()
+    def decode(indices):
+        return "".join(itos[int(i)] for i in indices)
 
-    img = Image.open(args.image_path).convert("RGB")
-    x = transform(img).unsqueeze(0).to(device)  # [1, 3, 32, 32]
+    # Recreate model + load weights
+    model = TinyCharRNN(vocab_size=vocab_size, embed_dim=64, hidden_dim=128).to(device)
+    state = torch.load(args.model_path, map_location=device)
+    model.load_state_dict(state)
 
+    # Prepare prompt
+    prompt_indices = torch.tensor([encode(args.prompt)], dtype=torch.long, device=device)
+
+    # Generate
     with torch.no_grad():
-        outputs = model(x)
-        probs = torch.softmax(outputs, dim=1)
-        pred_idx = probs.argmax(dim=1).item()
-        pred_class = class_names[pred_idx]
-        pred_prob = probs[0, pred_idx].item()
+        out_idx = generate(
+            model,
+            prompt_indices,
+            max_new_tokens=args.max_new_tokens,
+            block_size=block_size,
+            temperature=args.temperature,
+        )
 
-    print(f"Predicted class: {pred_class} (confidence: {pred_prob:.4f})")
+    generated_text = decode(out_idx[0].tolist())
+    print("\n=== Generated Text ===\n")
+    print(generated_text)
+    print("\n======================\n")
 
 
 if __name__ == "__main__":
