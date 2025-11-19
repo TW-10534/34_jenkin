@@ -4,7 +4,7 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 from model import SimpleCIFARConvNet
@@ -12,56 +12,39 @@ from model import SimpleCIFARConvNet
 
 def get_dataloaders(
     batch_size: int = 64,
-    train_limit: int | None = 2000,
-    test_limit: int | None = 1000,
+    num_train_samples: int = 500,
+    num_test_samples: int = 200,
     num_workers: int = 2,
 ):
     """
-    Create CIFAR-10 train/test dataloaders.
-
-    For CI/Jenkins we use only a subset (train_limit/test_limit)
-    to keep training fast.
+    Create tiny synthetic image dataset using FakeData.
+    No downloads, super fast. Perfect for Jenkins CI.
     """
-    transform_train = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomCrop(32, padding=4),
+    transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(
-            mean=[0.4914, 0.4822, 0.4465],
-            std=[0.2470, 0.2435, 0.2616],
+            mean=[0.5, 0.5, 0.5],
+            std=[0.5, 0.5, 0.5],
         ),
     ])
 
-    transform_test = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.4914, 0.4822, 0.4465],
-            std=[0.2470, 0.2435, 0.2616],
-        ),
-    ])
+    num_classes = 10
 
-    # This will download the data the first time, then reuse from "data/"
-    train_dataset = datasets.CIFAR10(
-        root="data",
-        train=True,
-        download=True,
-        transform=transform_train,
-    )
-    test_dataset = datasets.CIFAR10(
-        root="data",
-        train=False,
-        download=True,
-        transform=transform_test,
+    train_dataset = datasets.FakeData(
+        size=num_train_samples,
+        image_size=(3, 32, 32),
+        num_classes=num_classes,
+        transform=transform,
     )
 
-    # Save class names before wrapping in Subset (Subset removes .classes)
-    class_names = train_dataset.classes
+    test_dataset = datasets.FakeData(
+        size=num_test_samples,
+        image_size=(3, 32, 32),
+        num_classes=num_classes,
+        transform=transform,
+    )
 
-    # 🔥 Use only a small subset to keep CI fast
-    if train_limit is not None:
-        train_dataset = Subset(train_dataset, range(train_limit))
-    if test_limit is not None:
-        test_dataset = Subset(test_dataset, range(test_limit))
+    class_names = [f"class_{i}" for i in range(num_classes)]
 
     train_loader = DataLoader(
         train_dataset,
@@ -100,8 +83,8 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
         total += labels.size(0)
         correct += (predicted == labels).sum().item()
 
-    epoch_loss = running_loss / total
-    epoch_acc = correct / total
+    epoch_loss = running_loss / total if total > 0 else 0.0
+    epoch_acc = correct / total if total > 0 else 0.0
     return epoch_loss, epoch_acc
 
 
@@ -122,22 +105,19 @@ def evaluate(model, loader, criterion, device):
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
 
-    epoch_loss = running_loss / total
-    epoch_acc = correct / total
+    epoch_loss = running_loss / total if total > 0 else 0.0
+    epoch_acc = correct / total if total > 0 else 0.0
     return epoch_loss, epoch_acc
 
 
 def main():
     parser = argparse.ArgumentParser()
-    # For CI/Jenkins: 1 epoch by default
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=1)  # CI: 1 epoch
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--output_dir", type=str, default="artifacts")
-    parser.add_argument("--train_limit", type=int, default=2000,
-                        help="Number of training samples to use (None for full dataset)")
-    parser.add_argument("--test_limit", type=int, default=1000,
-                        help="Number of test samples to use (None for full dataset)")
+    parser.add_argument("--num_train_samples", type=int, default=500)
+    parser.add_argument("--num_test_samples", type=int, default=200)
     parser.add_argument("--num_workers", type=int, default=2)
     args = parser.parse_args()
 
@@ -148,8 +128,8 @@ def main():
 
     train_loader, test_loader, class_names = get_dataloaders(
         batch_size=args.batch_size,
-        train_limit=args.train_limit,
-        test_limit=args.test_limit,
+        num_train_samples=args.num_train_samples,
+        num_test_samples=args.num_test_samples,
         num_workers=args.num_workers,
     )
 
@@ -168,7 +148,7 @@ def main():
         )
 
     # Save model
-    model_path = os.path.join(args.output_dir, "cifar_cnn.pt")
+    model_path = os.path.join(args.output_dir, "fake_cifar_cnn.pt")
     torch.save(model.state_dict(), model_path)
     print(f"Saved model to {model_path}")
 

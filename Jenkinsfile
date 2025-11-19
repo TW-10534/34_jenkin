@@ -1,5 +1,4 @@
 pipeline {
-    // Later we can change this to a GPU node label if you add agents
     agent any
 
     environment {
@@ -11,8 +10,6 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                // when using "Pipeline from SCM", Jenkins already checks out,
-                // but this doesn't hurt and keeps it clear.
                 checkout scm
             }
         }
@@ -20,10 +17,18 @@ pipeline {
         stage('Setup Python Env') {
             steps {
                 sh """
-                ${PYTHON} -m venv ${VENV_DIR}
-                . ${VENV_DIR}/bin/activate
-                pip install --upgrade pip
-                pip install -r requirements.txt
+                # Create venv only if it doesn't exist
+                if [ ! -d "${VENV_DIR}" ]; then
+                  ${PYTHON} -m venv ${VENV_DIR}
+                  . ${VENV_DIR}/bin/activate
+                  pip install --upgrade pip
+                  # CPU-only PyTorch wheels (much smaller than CUDA)
+                  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+                  pip install -r requirements.txt
+                else
+                  . ${VENV_DIR}/bin/activate
+                  pip install -r requirements.txt
+                fi
                 """
             }
         }
@@ -33,7 +38,6 @@ pipeline {
                 sh """
                 . ${VENV_DIR}/bin/activate
                 ${PYTHON} train.py --output_dir ${OUTPUT_DIR}
-
                 """
             }
         }
@@ -47,10 +51,10 @@ pipeline {
 
     post {
         success {
-            echo " Training completed successfully."
+            echo "✅ Training completed successfully."
         }
         failure {
-            echo " Training failed. Check console output."
+            echo "❌ Training failed. Check console output."
         }
     }
 }
